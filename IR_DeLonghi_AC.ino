@@ -1,7 +1,7 @@
 /* MQTT IR Remote for DeLonghi A/C Model: Pinguino PAC EM93 Silent
 *
-* Goal: Home Assistant integration (or other home automation)
-* Hardware: Lolin/Wemos D1 mini & IR Controller Shield
+* Goal: Home Assistant integration (or other home automation) of AC
+* Hardware: Lolin/Wemos D1 mini (ESP8266) & IR Controller Shield
 *
 * Based on the work of David Conran https://github.com/crankyoldgit/IRremoteESP8266
 *  and Adafruit                     https://github.com/adafruit/Adafruit_MQTT_Library
@@ -10,12 +10,12 @@
 #include <Arduino.h>
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
-#include <ir_Electra.h>     // works with Pinguino PAC EM93 Silent
+#include <ir_Electra.h>  // works with Pinguino PAC EM93 Silent and ir_Delonghi.h doesn´t.
 #include <ESP8266WiFi.h>
-#include "Adafruit_MQTT.h"
-#include "Adafruit_MQTT_Client.h"
+#include <Adafruit_MQTT.h>
+#include <Adafruit_MQTT_Client.h>
 
-const uint16_t kIrLed = 0;  // Lolin/Wemos D1 mini (ESP8266) + IR Controller Shield GPIO pin use 0 (D3).
+const uint16_t kIrLed = 0;  // Lolin/Wemos D1 mini (ESP8266) + IR Controller Shield GPIO pin uses 0 (D3).
 IRElectraAc ac(kIrLed);
 
 /************************* WIFI Setup *********************************/
@@ -37,15 +37,15 @@ Adafruit_MQTT_Publish topic_emptying = Adafruit_MQTT_Publish(&mqtt, AIO_TOPIC "/
 Adafruit_MQTT_Subscribe topic_command = Adafruit_MQTT_Subscribe(&mqtt, AIO_TOPIC "/command");
 
 // initial settings
-void h_ac_initially_settings() {
+void ac_initially_settings() {
   ac.begin();
   ac.off();
   ac.setMode(kElectraAcCool);
   ac.setTemp(22);
   ac.setFan(kElectraAcFanLow);
-  ac.setSwingV(false);
-  ac.setSwingH(false);
-  ac.setLightToggle(kElectraAcLightToggleOff);
+  ac.setSwingV(false);                          // no hardware
+  ac.setSwingH(false);                          // no hardware
+  ac.setLightToggle(kElectraAcLightToggleOff);  // no hardware
 }
 
 void MQTT_connect();
@@ -56,14 +56,11 @@ void setup() {
   WiFi.hostname(hostname.c_str());
   WiFi.begin(WLAN_SSID, WLAN_PASS);
   while (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(LED_BUILTIN, LOW);
-    delay(500);
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(500);
+    led_notify_long();
   }
   // Setup MQTT subscription for topic_command feed.
   mqtt.subscribe(&topic_command);
-  h_ac_initially_settings();
+  ac_initially_settings();
 }
 
 void loop() {
@@ -76,8 +73,7 @@ void loop() {
         topic_state.publish(ac.toString().c_str());
       }
       if (0 == strcmp((char *)topic_command.lastread, "send")) {
-        topic_state.publish(ac.toString().c_str());
-        ac.send();
+        do_it();
       }
       if (0 == strcmp((char *)topic_command.lastread, "on") || 0 == strcmp((char *)topic_command.lastread, "off") || 0 == strcmp((char *)topic_command.lastread, "power")) {
         if (0 == strcmp((char *)topic_command.lastread, "on")) {
@@ -91,10 +87,9 @@ void loop() {
             ac.off();
           }
         }
-        topic_state.publish(ac.toString().c_str());
-        ac.send();
+        do_it();
       }
-      if (0 == strcmp((char *)topic_command.lastread, "cool") || 0 == strcmp((char *)topic_command.lastread, "dry") || 0 == strcmp((char *)topic_command.lastread, "fan") || 0 == strcmp((char *)topic_command.lastread, "mode")) {
+      if (0 == strcmp((char *)topic_command.lastread, "cool") || 0 == strcmp((char *)topic_command.lastread, "dry") || 0 == strcmp((char *)topic_command.lastread, "fan") || 0 == strcmp((char *)topic_command.lastread, "mode") && ac.getPower() == true) {
         if (0 == strcmp((char *)topic_command.lastread, "cool")) {
           ac.setMode(kElectraAcCool);
         } else if (0 == strcmp((char *)topic_command.lastread, "dry")) {
@@ -114,10 +109,9 @@ void loop() {
               break;
           }
         }
-        topic_state.publish(ac.toString().c_str());
-        ac.send();
+        do_it();
       }
-      if (0 == strcmp((char *)topic_command.lastread, "low") || 0 == strcmp((char *)topic_command.lastread, "medium") || 0 == strcmp((char *)topic_command.lastread, "high") || 0 == strcmp((char *)topic_command.lastread, "auto") || 0 == strcmp((char *)topic_command.lastread, "speed")) {
+      if (0 == strcmp((char *)topic_command.lastread, "low") || 0 == strcmp((char *)topic_command.lastread, "medium") || 0 == strcmp((char *)topic_command.lastread, "high") || 0 == strcmp((char *)topic_command.lastread, "auto") || 0 == strcmp((char *)topic_command.lastread, "speed") && ac.getPower() == true && kElectraAcDry != ac.getMode()) {
         if (0 == strcmp((char *)topic_command.lastread, "low")) {
           ac.setFan(kElectraAcFanLow);
         } else if (0 == strcmp((char *)topic_command.lastread, "medium")) {
@@ -142,17 +136,15 @@ void loop() {
               break;
           }
         }
-        topic_state.publish(ac.toString().c_str());
-        ac.send();
+        do_it();
       }
-      if (0 == strcmp((char *)topic_command.lastread, "+") || 0 == strcmp((char *)topic_command.lastread, "-")) {
+      if ((0 == strcmp((char *)topic_command.lastread, "+") || 0 == strcmp((char *)topic_command.lastread, "-")) && ac.getPower() == true && kElectraAcDry != ac.getMode() && kElectraAcFan != ac.getMode()) {
         if (0 == strcmp((char *)topic_command.lastread, "+")) {
           ac.setTemp(ac.getTemp() + 1);
         } else if (0 == strcmp((char *)topic_command.lastread, "-") && ac.getTemp() >= 19) {
           ac.setTemp(ac.getTemp() - 1);
         }
-        topic_state.publish(ac.toString().c_str());
-        ac.send();
+        do_it();
       }
     }
   }
@@ -170,12 +162,9 @@ void MQTT_connect() {
 
   uint8_t retries = 3;
   while ((ret = mqtt.connect()) != 0) {  // connect will return 0 for connected
-    digitalWrite(LED_BUILTIN, LOW);
-    delay(500);
-    digitalWrite(LED_BUILTIN, HIGH);
-    delay(500);
+    led_notify_long();
     mqtt.disconnect();
-    delay(5000);  // wait 5 seconds
+    //delay(5000);  // wait 5 seconds
     retries--;
     if (retries == 0) {
       // basically die and wait for WDT to reset me
@@ -185,4 +174,23 @@ void MQTT_connect() {
   }
   topic_state.publish(ac.toString().c_str());
   topic_emptying.publish("empty");
+}
+
+void led_notify() {
+  digitalWrite(LED_BUILTIN, LOW);
+  delay(50);
+  digitalWrite(LED_BUILTIN, HIGH);
+}
+
+void led_notify_long() {
+  digitalWrite(LED_BUILTIN, LOW);
+  delay(500);
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(500);
+}
+
+void do_it() {
+  topic_state.publish(ac.toString().c_str());
+  led_notify();
+  ac.send();
 }
